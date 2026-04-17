@@ -39,7 +39,7 @@ USAR_IA_FOLLOWUP = True
 USAR_IA_EXTRACAO = True
 OLLAMA_MODEL = "llama3.2:3b"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-OLLAMA_TIMEOUT_SEGUNDOS = 12
+OLLAMA_TIMEOUT_SEGUNDOS = 60
 
 ARQUIVO_XLSX = Path("saida/precos_combustivel.xlsx")
 ABA_REGISTROS = "RegistrosWhatsApp"
