@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,8 @@ SAUDACAO = "Bom dia"
 SOLICITACAO_FALLBACK = "Poderia me informar os valores atuais de S500 e S10, por favor?"
 
 USAR_IA_MENSAGENS = False
+USAR_IA_SOLICITACAO = False
+USAR_IA_FOLLOWUP = True
 USAR_IA_EXTRACAO = True
 OLLAMA_MODEL = "llama3.2:3b"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
@@ -89,6 +92,11 @@ def call_ollama_json(prompt: str) -> dict:
     return json.loads(payload["response"])
 
 
+def normalizar_texto(texto: str) -> str:
+    sem_acento = unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode("ascii")
+    return sem_acento.lower().strip()
+
+
 def mensagem_valida_para_envio(msg: str, empresa: str, exigir_s500_s10: bool) -> bool:
     msg_lower = msg.lower()
     bloqueadas = [
@@ -105,7 +113,7 @@ def mensagem_valida_para_envio(msg: str, empresa: str, exigir_s500_s10: bool) ->
 
 
 def gerar_solicitacao_ia(empresa: str, fallback: str) -> str:
-    if not USAR_IA_MENSAGENS:
+    if not USAR_IA_SOLICITACAO:
         return fallback
 
     prompt = (
@@ -162,14 +170,16 @@ def gerar_followup_ia(
     lembrete: bool,
 ) -> str:
     fallback = fallback_followup(faltantes=faltantes, lembrete=lembrete)
-    if not USAR_IA_MENSAGENS:
+    if not USAR_IA_FOLLOWUP:
         return fallback
 
     faltantes_txt = " e ".join(faltantes)
     tipo = "lembrete educado" if lembrete else "pedido de complemento"
     prompt = (
         f"Escreva UMA mensagem curta de WhatsApp para {tipo}.\n"
-        "Contexto: voce e comprador e quer os valores faltantes de combustivel.\n"
+        "Contexto: voce e uma gestora de precos de combustivel e precisa "
+        "obter os valores com objetividade e educacao.\n"
+        "Sua prioridade absoluta e receber os valores faltantes.\n"
         f"Faltam estes valores: {faltantes_txt}.\n"
         "Regras obrigatorias:\n"
         "- portugues do Brasil\n"
@@ -198,6 +208,19 @@ def gerar_followup_ia(
     except Exception as exc:  # noqa: BLE001
         print(f"[aviso] IA nao gerou follow-up, usando fallback. Detalhe: {exc}")
         return fallback
+
+
+def resposta_indica_contato_incorreto(texto: str) -> bool:
+    t = normalizar_texto(texto)
+    padroes = [
+        r"nao sou.*(responsavel|contato|comercial)",
+        r"nao e comigo",
+        r"nao tenho.*(contato|informacao|acesso)",
+        r"falar com.*(comercial|compras|vendas|gestor|responsavel)",
+        r"procure.*(comercial|compras|vendas|responsavel)",
+        r"contato.*(errado|equivocado)",
+    ]
+    return any(re.search(p, t) for p in padroes)
 
 
 def extract_prices_regex(texto: str) -> dict[str, float]:
@@ -370,6 +393,23 @@ def coletar_precos_em_conversa(
                     "status": "OK_COMPLETO",
                     "tentativas_followup": followups,
                     "obs": "Valores S500 e S10 capturados com sucesso.",
+                    "historico": " || ".join(historico_respostas),
+                }
+
+            if resposta_indica_contato_incorreto(ultima_msg_recebida):
+                return {
+                    "sucesso": False,
+                    "s500": s500_final,
+                    "s10": s10_final,
+                    "metodo": metodo_final,
+                    "ultima_msg": ultima_msg_recebida,
+                    "ultima_solicitacao": ultima_solicitacao,
+                    "status": "CONTATO_INVALIDO",
+                    "tentativas_followup": followups,
+                    "obs": (
+                        "Contato informou que nao e o responsavel pelos valores "
+                        "ou nao possui essa informacao. Conversa interrompida."
+                    ),
                     "historico": " || ".join(historico_respostas),
                 }
 
