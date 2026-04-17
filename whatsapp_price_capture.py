@@ -38,7 +38,7 @@ USAR_IA_SOLICITACAO = False
 USAR_IA_FOLLOWUP = True
 USAR_IA_EXTRACAO = True
 # Modelo padrao mais rapido para esse fluxo (gratuito/local).
-OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_MODEL = "phi4-mini-reasoning:3.8b"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
 OLLAMA_TIMEOUT_SEGUNDOS = 60
 
