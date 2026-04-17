@@ -29,10 +29,10 @@ NUMERO = "5521996697733"  # sem +, sem espaco, sem traco
 EMPRESA = "Empresa Exemplo"
 
 SAUDACAO = "Bom dia"
-SOLICITACAO_FALLBACK = "16"
+SOLICITACAO_FALLBACK = "Poderia me informar os valores atuais de S500 e S10, por favor?"
 
 USAR_IA = True
-OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_MODEL = "llama3.2:3b"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
 OLLAMA_TIMEOUT_SEGUNDOS = 60
 
@@ -86,17 +86,42 @@ def gerar_solicitacao_ia(empresa: str, fallback: str) -> str:
         return fallback
 
     prompt = (
-        "Crie uma unica mensagem curta para WhatsApp em portugues.\n"
-        "Objetivo: pedir preco atual de combustivel S500 e S10.\n"
-        "Seja educado e objetivo, sem emoji.\n"
-        f"Empresa: {empresa}\n"
-        "Retorne SOMENTE JSON com chave 'mensagem'."
+        "Voce esta escrevendo UMA mensagem curta para WhatsApp no papel de COMPRADOR "
+        "que esta solicitando preco para o fornecedor.\n"
+        "Objetivo: pedir os valores atuais de combustivel S500 e S10.\n"
+        "Regras obrigatorias:\n"
+        "- escreva em portugues do Brasil\n"
+        "- tom educado e objetivo\n"
+        "- nao usar emoji\n"
+        "- nao usar a palavra 'solicite'\n"
+        "- nao usar 'entre em contato conosco'\n"
+        "- nao mencionar o nome da empresa do comprador\n"
+        "- mensagem curta, ate 160 caracteres\n"
+        "- a frase precisa parecer um pedido direto ao fornecedor\n"
+        f"- nome da empresa compradora (NAO mencionar no texto): {empresa}\n\n"
+        "Retorne SOMENTE JSON valido com a chave 'mensagem'.\n"
+        'Exemplo de formato: {"mensagem":"Poderia me informar os valores atuais de S500 e S10, por favor?"}'
     )
 
     try:
         data = call_ollama_json(prompt)
         msg = str(data.get("mensagem", "")).strip()
         if msg:
+            msg = re.sub(r"\s+", " ", msg).strip()
+            msg_lower = msg.lower()
+            bloqueadas = [
+                "solicite",
+                "entre em contato conosco",
+                "estamos solicitando",
+                "empresa exemplo",
+                empresa.lower().strip(),
+            ]
+            if any(p and p in msg_lower for p in bloqueadas):
+                print("[aviso] IA gerou frase fora do padrao, usando fallback.")
+                return fallback
+            if "s500" not in msg_lower or "s10" not in msg_lower:
+                print("[aviso] IA nao citou S500/S10, usando fallback.")
+                return fallback
             return msg
     except Exception as exc:  # noqa: BLE001
         print(f"[aviso] IA nao gerou solicitacao, usando fallback. Detalhe: {exc}")
