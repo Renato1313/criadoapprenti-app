@@ -20,6 +20,8 @@ from typing import Optional
 
 import requests
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from playwright.sync_api import sync_playwright
 
 # ====== CONFIGURACAO ======
@@ -35,6 +37,20 @@ OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
 OLLAMA_TIMEOUT_SEGUNDOS = 60
 
 ARQUIVO_XLSX = Path("saida/precos_combustivel.xlsx")
+ABA_REGISTROS = "RegistrosWhatsApp"
+CABECALHOS = [
+    "DataHora",
+    "Empresa",
+    "Telefone",
+    "SaudacaoEnviada",
+    "SolicitacaoEnviada",
+    "MensagemRecebida",
+    "PrecoS500",
+    "PrecoS10",
+    "MetodoExtracao",
+    "Status",
+    "Observacoes",
+]
 TIMEOUT_RESPOSTA_SEGUNDOS = 7200  # 2h
 POLL_SEGUNDOS = 2
 # ==========================
@@ -199,9 +215,96 @@ def wait_new_inbound(page, baseline_key, timeout_seconds=7200, poll_seconds=2):
     raise TimeoutError("Nenhuma nova mensagem recebida dentro do tempo limite.")
 
 
+def obter_aba_registros(wb):
+    if ABA_REGISTROS not in wb.sheetnames:
+        ws = wb.create_sheet(ABA_REGISTROS)
+    else:
+        ws = wb[ABA_REGISTROS]
+    return ws
+
+
+def garantir_cabecalho(ws) -> None:
+    primeira_linha = [ws.cell(row=1, column=i).value for i in range(1, len(CABECALHOS) + 1)]
+    if primeira_linha == CABECALHOS:
+        return
+
+    if ws.max_row == 1 and all(v in (None, "") for v in primeira_linha):
+        for col, header in enumerate(CABECALHOS, start=1):
+            ws.cell(row=1, column=col, value=header)
+        return
+
+    ws.insert_rows(1)
+    for col, header in enumerate(CABECALHOS, start=1):
+        ws.cell(row=1, column=col, value=header)
+
+
+def aplicar_estilo_planilha(ws) -> None:
+    header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin = Side(border_style="thin", color="D9D9D9")
+    data_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for col_idx, _ in enumerate(CABECALHOS, start=1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = data_border
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(CABECALHOS))}{max(ws.max_row, 1)}"
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=len(CABECALHOS)):
+        for cell in row:
+            cell.border = data_border
+            cell.alignment = Alignment(vertical="top", wrap_text=False)
+
+    # Colunas de texto longo com quebra de linha
+    ws.column_dimensions["E"].width = 40
+    ws.column_dimensions["F"].width = 55
+    ws.column_dimensions["K"].width = 35
+    ws.column_dimensions["G"].width = 14
+    ws.column_dimensions["H"].width = 14
+
+    # Ajuste automatico basico para as demais colunas
+    for col_idx in range(1, len(CABECALHOS) + 1):
+        letter = get_column_letter(col_idx)
+        if letter in {"E", "F", "K", "G", "H"}:
+            continue
+
+        max_len = 0
+        for row_idx in range(1, ws.max_row + 1):
+            value = ws.cell(row=row_idx, column=col_idx).value
+            if value is None:
+                continue
+            max_len = max(max_len, len(str(value)))
+        ws.column_dimensions[letter].width = min(max(max_len + 2, 12), 28)
+
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=7).number_format = "0.0000"
+        ws.cell(row=row_idx, column=8).number_format = "0.0000"
+        ws.cell(row=row_idx, column=6).alignment = Alignment(vertical="top", wrap_text=True)
+        ws.cell(row=row_idx, column=11).alignment = Alignment(vertical="top", wrap_text=True)
+
+
+def montar_status_e_observacoes(
+    s500: Optional[float],
+    s10: Optional[float],
+    metodo_extracao: str,
+) -> tuple[str, str]:
+    if s500 is not None and s10 is not None:
+        return "OK_COMPLETO", f"Valores extraidos com {metodo_extracao}"
+    if s500 is not None or s10 is not None:
+        faltante = "S10" if s500 is not None else "S500"
+        return "OK_PARCIAL", f"Faltou {faltante}; metodo {metodo_extracao}"
+    return "SEM_VALORES", f"Nenhum valor encontrado; metodo {metodo_extracao}"
+
+
 def salvar_excel(
     empresa: str,
     numero: str,
+    saudacao_enviada: str,
     solicitacao_enviada: str,
     mensagem_recebida: str,
     s500: Optional[float],
@@ -212,36 +315,32 @@ def salvar_excel(
 
     if ARQUIVO_XLSX.exists():
         wb = load_workbook(ARQUIVO_XLSX)
-        ws = wb.active
     else:
         wb = Workbook()
-        ws = wb.active
-        ws.title = "Precos"
-        ws.append(
-            [
-                "timestamp",
-                "empresa",
-                "telefone",
-                "solicitacao_enviada",
-                "mensagem_recebida",
-                "S500",
-                "S10",
-                "metodo_extracao",
-            ]
-        )
+        # Remove a aba padrao para deixar apenas o layout de registros.
+        padrao = wb.active
+        wb.remove(padrao)
+
+    ws = obter_aba_registros(wb)
+    garantir_cabecalho(ws)
+    status, observacoes = montar_status_e_observacoes(s500=s500, s10=s10, metodo_extracao=metodo_extracao)
 
     ws.append(
         [
             datetime.now().isoformat(timespec="seconds"),
             empresa,
             numero,
+            saudacao_enviada,
             solicitacao_enviada,
             mensagem_recebida,
             s500,
             s10,
             metodo_extracao,
+            status,
+            observacoes,
         ]
     )
+    aplicar_estilo_planilha(ws)
     wb.save(ARQUIVO_XLSX)
 
 
@@ -301,6 +400,7 @@ with sync_playwright() as p:
         salvar_excel(
             empresa=EMPRESA,
             numero=NUMERO,
+            saudacao_enviada=SAUDACAO,
             solicitacao_enviada=solicitacao,
             mensagem_recebida=resposta["text"],
             s500=s500,
