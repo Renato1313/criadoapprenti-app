@@ -37,7 +37,8 @@ USAR_IA_MENSAGENS = False
 USAR_IA_SOLICITACAO = False
 USAR_IA_FOLLOWUP = True
 USAR_IA_EXTRACAO = True
-OLLAMA_MODEL = "llama3.2:3b"
+# Modelo padrao mais rapido para esse fluxo (gratuito/local).
+OLLAMA_MODEL = "qwen2.5:3b"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
 OLLAMA_TIMEOUT_SEGUNDOS = 60
 
@@ -187,6 +188,8 @@ def gerar_followup_ia(
         "- sem emoji\n"
         "- nao usar a palavra 'solicite'\n"
         "- nao usar 'entre em contato conosco'\n"
+        "- nao mencionar cobranca, pagamento, boleto ou financeiro\n"
+        "- se o contato disse que vai verificar, responda sem insistencia\n"
         "- nao mencionar empresa compradora\n"
         f"- ultima resposta recebida: {ultima_resposta[:200] or 'sem resposta'}\n"
         f"- deve citar explicitamente: {faltantes_txt}\n\n"
@@ -199,6 +202,9 @@ def gerar_followup_ia(
         if not msg:
             return fallback
         msg_lower = msg.lower()
+        bloqueios = ["cobranca", "pagamento", "boleto", "financeiro"]
+        if any(b in msg_lower for b in bloqueios):
+            return fallback
         for item in faltantes:
             if item.lower() not in msg_lower:
                 return fallback
@@ -219,6 +225,27 @@ def resposta_indica_contato_incorreto(texto: str) -> bool:
         r"falar com.*(comercial|compras|vendas|gestor|responsavel)",
         r"procure.*(comercial|compras|vendas|responsavel)",
         r"contato.*(errado|equivocado)",
+    ]
+    return any(re.search(p, t) for p in padroes)
+
+
+def resposta_indica_aguardo(texto: str) -> bool:
+    """Detecta respostas como 'ok', 'um momento', 'vou verificar'."""
+    t = normalizar_texto(texto)
+    padroes = [
+        r"\bok\b",
+        r"\bblz\b",
+        r"um momento",
+        r"so um momento",
+        r"aguarde",
+        r"aguarda",
+        r"ja te retorno",
+        r"ja retorno",
+        r"vou verificar",
+        r"vou ver",
+        r"ja vejo",
+        r"fique no aguardo",
+        r"te aviso",
     ]
     return any(re.search(p, t) for p in padroes)
 
@@ -412,6 +439,11 @@ def coletar_precos_em_conversa(
                     ),
                     "historico": " || ".join(historico_respostas),
                 }
+
+            # Se o contato confirmou que vai verificar, aguarda sem insistir.
+            if resposta_indica_aguardo(ultima_msg_recebida):
+                print("[info] Contato pediu aguardo; sem follow-up imediato.")
+                continue
 
             if followups < MAX_FOLLOWUPS:
                 follow = gerar_followup_ia(
