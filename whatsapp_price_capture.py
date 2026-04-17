@@ -23,6 +23,7 @@ import requests
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -44,6 +45,7 @@ OLLAMA_TIMEOUT_SEGUNDOS = 60
 
 ARQUIVO_XLSX = Path("saida/precos_combustivel.xlsx")
 ABA_REGISTROS = "RegistrosWhatsApp"
+ABA_DASHBOARD = "Painel"
 CABECALHOS = [
     "DataHora",
     "Empresa",
@@ -526,6 +528,14 @@ def aplicar_estilo_planilha(ws) -> None:
     header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
     header_font = Font(color="FFFFFF", bold=True)
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    zebra_fill = PatternFill(fill_type="solid", fgColor="F7FBFF")
+    status_fill_map = {
+        "OK_COMPLETO": PatternFill(fill_type="solid", fgColor="E2F0D9"),
+        "TIMEOUT_PARCIAL": PatternFill(fill_type="solid", fgColor="FFF2CC"),
+        "TIMEOUT_SEM_VALORES": PatternFill(fill_type="solid", fgColor="FCE4D6"),
+        "TIMEOUT_SEM_RESPOSTA": PatternFill(fill_type="solid", fgColor="FCE4D6"),
+        "CONTATO_INVALIDO": PatternFill(fill_type="solid", fgColor="F8CBAD"),
+    }
     thin = Side(border_style="thin", color="D9D9D9")
     data_border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -539,10 +549,18 @@ def aplicar_estilo_planilha(ws) -> None:
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(CABECALHOS))}{max(ws.max_row, 1)}"
 
+    idx_status = CABECALHOS.index("Status") + 1
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=len(CABECALHOS)):
+        row_number = row[0].row
+        status = str(ws.cell(row=row_number, column=idx_status).value or "").strip()
+        row_fill = status_fill_map.get(status)
         for cell in row:
             cell.border = data_border
             cell.alignment = Alignment(vertical="top", wrap_text=False)
+            if row_fill:
+                cell.fill = row_fill
+            elif row_number % 2 == 0:
+                cell.fill = zebra_fill
 
     largura_por_cabecalho = {
         "SolicitacaoInicial": 40,
@@ -573,6 +591,142 @@ def aplicar_estilo_planilha(ws) -> None:
         ws.cell(row=row_idx, column=idx_s10).number_format = "0.0000"
         ws.cell(row=row_idx, column=idx_msg).alignment = Alignment(vertical="top", wrap_text=True)
         ws.cell(row=row_idx, column=idx_obs).alignment = Alignment(vertical="top", wrap_text=True)
+
+    # Usa tabela do Excel para deixar navegacao/filtro mais amigavel.
+    if ws.max_row >= 2:
+        for nome in list(ws.tables.keys()):
+            del ws.tables[nome]
+        ultima_col = get_column_letter(len(CABECALHOS))
+        ref_tabela = f"A1:{ultima_col}{ws.max_row}"
+        tabela = Table(displayName="TabelaRegistros", ref=ref_tabela)
+        tabela.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(tabela)
+
+
+def obter_aba_dashboard(wb):
+    if ABA_DASHBOARD not in wb.sheetnames:
+        ws = wb.create_sheet(ABA_DASHBOARD)
+    else:
+        ws = wb[ABA_DASHBOARD]
+    return ws
+
+
+def atualizar_dashboard(ws_dash, ws_reg) -> None:
+    ws_dash.delete_rows(1, ws_dash.max_row or 1)
+    ws_dash.sheet_view.showGridLines = False
+
+    idx_data = CABECALHOS.index("DataHora") + 1
+    idx_empresa = CABECALHOS.index("Empresa") + 1
+    idx_s500 = CABECALHOS.index("PrecoS500") + 1
+    idx_s10 = CABECALHOS.index("PrecoS10") + 1
+    idx_status = CABECALHOS.index("Status") + 1
+
+    status_counts: dict[str, int] = {}
+    s500_vals: list[float] = []
+    s10_vals: list[float] = []
+    registros_validos = 0
+    ultimos_registros: list[tuple] = []
+
+    for row_idx in range(2, ws_reg.max_row + 1):
+        data = ws_reg.cell(row=row_idx, column=idx_data).value
+        empresa = ws_reg.cell(row=row_idx, column=idx_empresa).value
+        status = str(ws_reg.cell(row=row_idx, column=idx_status).value or "").strip()
+        if not data and not empresa and not status:
+            continue
+        registros_validos += 1
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+        s500 = ws_reg.cell(row=row_idx, column=idx_s500).value
+        s10 = ws_reg.cell(row=row_idx, column=idx_s10).value
+        if isinstance(s500, (int, float)):
+            s500_vals.append(float(s500))
+        if isinstance(s10, (int, float)):
+            s10_vals.append(float(s10))
+        ultimos_registros.append(
+            (
+                ws_reg.cell(row=row_idx, column=idx_data).value,
+                ws_reg.cell(row=row_idx, column=idx_empresa).value,
+                status,
+                s500,
+                s10,
+            )
+        )
+
+    ok_completo = status_counts.get("OK_COMPLETO", 0)
+    taxa_sucesso = (ok_completo / registros_validos * 100.0) if registros_validos else 0.0
+    media_s500 = sum(s500_vals) / len(s500_vals) if s500_vals else None
+    media_s10 = sum(s10_vals) / len(s10_vals) if s10_vals else None
+
+    ws_dash.merge_cells("A1:F1")
+    ws_dash["A1"] = "Painel de Monitoramento - Captura de Precos"
+    ws_dash["A1"].font = Font(size=14, bold=True, color="FFFFFF")
+    ws_dash["A1"].fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+    ws_dash["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    metricas = [
+        ("Total de Registros", registros_validos),
+        ("Sucesso Completo (S500+S10)", ok_completo),
+        ("Taxa de Sucesso", f"{taxa_sucesso:.1f}%"),
+        ("Timeout sem resposta", status_counts.get("TIMEOUT_SEM_RESPOSTA", 0)),
+        ("Timeout parcial", status_counts.get("TIMEOUT_PARCIAL", 0)),
+        ("Contato invalido", status_counts.get("CONTATO_INVALIDO", 0)),
+        ("Media S500", f"{media_s500:.4f}" if media_s500 is not None else "-"),
+        ("Media S10", f"{media_s10:.4f}" if media_s10 is not None else "-"),
+    ]
+
+    linha = 3
+    for rotulo, valor in metricas:
+        ws_dash[f"A{linha}"] = rotulo
+        ws_dash[f"B{linha}"] = valor
+        ws_dash[f"A{linha}"].font = Font(bold=True, color="1F4E78")
+        ws_dash[f"A{linha}"].fill = PatternFill(fill_type="solid", fgColor="EAF2FB")
+        ws_dash[f"B{linha}"].fill = PatternFill(fill_type="solid", fgColor="F8FBFF")
+        ws_dash[f"A{linha}"].border = Border(
+            left=Side(style="thin", color="D9D9D9"),
+            right=Side(style="thin", color="D9D9D9"),
+            top=Side(style="thin", color="D9D9D9"),
+            bottom=Side(style="thin", color="D9D9D9"),
+        )
+        ws_dash[f"B{linha}"].border = ws_dash[f"A{linha}"].border
+        linha += 1
+
+    inicio_ultimos = 13
+    ws_dash[f"A{inicio_ultimos}"] = "Ultimos Registros"
+    ws_dash[f"A{inicio_ultimos}"].font = Font(bold=True, color="1F4E78")
+    ws_dash[f"A{inicio_ultimos}"].alignment = Alignment(horizontal="left")
+
+    headers_ultimos = ["DataHora", "Empresa", "Status", "S500", "S10"]
+    for col_idx, head in enumerate(headers_ultimos, start=1):
+        c = ws_dash.cell(row=inicio_ultimos + 1, column=col_idx, value=head)
+        c.font = Font(color="FFFFFF", bold=True)
+        c.fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+        c.alignment = Alignment(horizontal="center")
+
+    for i, row in enumerate(reversed(ultimos_registros[-8:]), start=0):
+        row_num = inicio_ultimos + 2 + i
+        for col_idx, value in enumerate(row, start=1):
+            cell = ws_dash.cell(row=row_num, column=col_idx, value=value)
+            cell.border = Border(
+                left=Side(style="thin", color="D9D9D9"),
+                right=Side(style="thin", color="D9D9D9"),
+                top=Side(style="thin", color="D9D9D9"),
+                bottom=Side(style="thin", color="D9D9D9"),
+            )
+            if col_idx in (4, 5) and isinstance(value, (int, float)):
+                cell.number_format = "0.0000"
+
+    ws_dash.column_dimensions["A"].width = 34
+    ws_dash.column_dimensions["B"].width = 22
+    ws_dash.column_dimensions["C"].width = 22
+    ws_dash.column_dimensions["D"].width = 14
+    ws_dash.column_dimensions["E"].width = 14
+    ws_dash.column_dimensions["F"].width = 14
 
 
 def salvar_excel(
@@ -611,6 +765,9 @@ def salvar_excel(
         ]
     )
     aplicar_estilo_planilha(ws)
+    ws_dash = obter_aba_dashboard(wb)
+    atualizar_dashboard(ws_dash, ws)
+    wb.active = wb.sheetnames.index(ABA_DASHBOARD)
     wb.save(ARQUIVO_XLSX)
 
 
