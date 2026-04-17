@@ -32,10 +32,11 @@ EMPRESA = "Empresa Exemplo"
 SAUDACAO = "Bom dia"
 SOLICITACAO_FALLBACK = "Poderia me informar os valores atuais de S500 e S10, por favor?"
 
-USAR_IA = True
+USAR_IA_MENSAGENS = False
+USAR_IA_EXTRACAO = True
 OLLAMA_MODEL = "llama3.2:3b"
 OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-OLLAMA_TIMEOUT_SEGUNDOS = 60
+OLLAMA_TIMEOUT_SEGUNDOS = 12
 
 ARQUIVO_XLSX = Path("saida/precos_combustivel.xlsx")
 ABA_REGISTROS = "RegistrosWhatsApp"
@@ -104,7 +105,7 @@ def mensagem_valida_para_envio(msg: str, empresa: str, exigir_s500_s10: bool) ->
 
 
 def gerar_solicitacao_ia(empresa: str, fallback: str) -> str:
-    if not USAR_IA:
+    if not USAR_IA_MENSAGENS:
         return fallback
 
     prompt = (
@@ -161,7 +162,7 @@ def gerar_followup_ia(
     lembrete: bool,
 ) -> str:
     fallback = fallback_followup(faltantes=faltantes, lembrete=lembrete)
-    if not USAR_IA:
+    if not USAR_IA_MENSAGENS:
         return fallback
 
     faltantes_txt = " e ".join(faltantes)
@@ -242,7 +243,7 @@ def extract_prices(texto: str) -> tuple[Optional[float], Optional[float], str]:
 
     # Evita IA em textos totalmente fora de contexto para nao "inventar" valor.
     tem_indicio = re.search(r"(?i)\bS\s*500\b|\bS\s*10\b|[0-9]+[.,][0-9]+", texto) is not None
-    if not USAR_IA or not tem_indicio:
+    if not USAR_IA_EXTRACAO or not tem_indicio:
         return s500, s10, metodo
 
     try:
