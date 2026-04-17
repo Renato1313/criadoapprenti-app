@@ -59,6 +59,7 @@ TIMEOUT_RESPOSTA_SEGUNDOS = 7200  # 2h
 POLL_SEGUNDOS = 2
 INTERVALO_LEMBRETE_SEGUNDOS = 40 * 60  # 40 minutos
 MAX_FOLLOWUPS = 6
+PAUSAR_NO_FINAL = False
 # ==========================
 
 
@@ -555,12 +556,8 @@ def main() -> None:
                 wait_until="domcontentloaded",
                 timeout=120000,
             )
-
-            page.wait_for_timeout(12000)
-            input("Se a conversa abriu, aperte ENTER aqui no prompt para continuar...")
-
-            caixa = page.locator('footer div[contenteditable="true"]').first
-            caixa.wait_for(timeout=20000)
+            page.wait_for_selector("#main footer", timeout=60_000)
+            page.wait_for_timeout(1200)
 
             baseline = get_last_inbound_message(page)
             baseline_key = baseline["key"] if baseline else None
@@ -599,7 +596,8 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"Erro: {exc}")
         finally:
-            input("Pressione ENTER para fechar...")
+            if PAUSAR_NO_FINAL:
+                input("Pressione ENTER para fechar...")
             context.close()
 
 
