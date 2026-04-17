@@ -1,18 +1,21 @@
-# Automacao WhatsApp - Captura de Precos
+# Automacao WhatsApp - Contatos em planilha + IA local opcional
 
 Script em Python com Playwright para:
 
-1. Abrir o WhatsApp Web com sessao persistente
-2. Enviar mensagens para um numero (ex.: `Bom dia` e `16`)
-3. Aguardar resposta por ate 2 horas
-4. Capturar de forma robusta a ultima mensagem recebida
-5. Extrair precos de `S500` e `S10`
-6. Salvar resultado em Excel (`.xlsx`)
+1. Ler contatos de uma planilha Excel (empresa + telefone)
+2. Abrir WhatsApp Web com sessao persistente
+3. Enviar saudacao e solicitacao por contato
+4. Gerar solicitacao via IA local (Ollama), opcional
+5. Aguardar resposta por contato
+6. Capturar ultima mensagem recebida com estrategia robusta
+7. Extrair S500 e S10 com regex + fallback IA
+8. Salvar resultado na mesma planilha
 
 ## Requisitos
 
 - Python 3.10+
 - Linux/macOS/Windows
+- (Opcional para IA) Ollama local em execucao
 
 ## Instalacao
 
@@ -23,70 +26,13 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-## Execucao
-
-### Exemplo basico
+Se for usar IA local:
 
 ```bash
-python whatsapp_price_capture.py --phone 5511999999999
+ollama pull qwen2.5:3b
 ```
 
-Por padrao, o script envia:
-
-- saudacao: `Bom dia`
-- codigo: `16`
-- timeout de espera: `7200` segundos (2h)
-- arquivo de saida: `saida/precos_combustivel.xlsx`
-
-### Parametros uteis
-
-```bash
-python whatsapp_price_capture.py \
-  --phone 5511999999999 \
-  --greeting "Bom dia" \
-  --request-code "16" \
-  --timeout 7200 \
-  --poll 2 \
-  --output "saida/precos_combustivel.xlsx" \
-  --user-data-dir ".wweb_profile"
-```
-
-## Primeiro login no WhatsApp Web
-
-No primeiro uso, o navegador pode abrir pedindo QR code.
-
-1. Escaneie o QR code no celular
-2. Aguarde o carregamento da lista de conversas
-3. Nas proximas execucoes, a sessao sera reutilizada via `--user-data-dir`
-
-## Formatos de resposta aceitos
-
-Exemplos capturados:
-
-```text
-S500: 6,45004
-S10: 6,75516
-```
-
-ou
-
-```text
-S500 5,99
-```
-
-O parser tenta extrair `S500` e `S10` mesmo com variacoes de espaco, dois pontos e quebra de linha.
-
-## Saida no Excel
-
-Colunas geradas:
-
-- `timestamp`
-- `telefone`
-- `saudacao`
-- `codigo_solicitado`
-- `mensagem_recebida`
-- `S500`
-- `S10`
+## Como funciona a planilha
 
 Arquivo padrao:
 
@@ -94,7 +40,91 @@ Arquivo padrao:
 saida/precos_combustivel.xlsx
 ```
 
+Abas usadas:
+
+- `Contatos` (entrada)
+- `Registros` (saida)
+
+### Aba Contatos (cabecalho obrigatorio)
+
+| empresa | telefone | contexto | mensagem_solicitacao |
+| --- | --- | --- | --- |
+| Posto XPTO | 5521999999999 | aceita codigo 16 | 16 |
+| Distribuidora ABC | 5511998887777 | prefere texto completo | |
+
+Campos:
+
+- `empresa` (obrigatorio)
+- `telefone` (obrigatorio)
+- `contexto` (opcional, ajuda a IA a gerar melhor texto)
+- `mensagem_solicitacao` (opcional, se preenchido tem prioridade sobre IA)
+
+### Aba Registros (saida automatica)
+
+Colunas salvas:
+
+- `timestamp`
+- `empresa`
+- `telefone`
+- `saudacao_enviada`
+- `solicitacao_enviada`
+- `mensagem_recebida`
+- `S500`
+- `S10`
+- `metodo_extracao` (`regex` ou `regex+ia`)
+- `status`
+- `erro`
+
+## Execucao
+
+### Modo padrao (sem IA)
+
+```bash
+python whatsapp_price_capture.py \
+  --workbook "saida/precos_combustivel.xlsx" \
+  --greeting "Bom dia" \
+  --default-request "16"
+```
+
+### Modo com IA local (Ollama)
+
+```bash
+python whatsapp_price_capture.py \
+  --workbook "saida/precos_combustivel.xlsx" \
+  --greeting "Bom dia" \
+  --default-request "16" \
+  --ai-enabled \
+  --ai-model "qwen2.5:3b"
+```
+
+## Parametros uteis
+
+```bash
+python whatsapp_price_capture.py \
+  --workbook "saida/precos_combustivel.xlsx" \
+  --contacts-sheet "Contatos" \
+  --records-sheet "Registros" \
+  --greeting "Bom dia" \
+  --default-request "16" \
+  --timeout 7200 \
+  --poll 2 \
+  --user-data-dir ".wweb_profile" \
+  --ai-enabled \
+  --ai-model "qwen2.5:3b" \
+  --ai-endpoint "http://localhost:11434/api/generate" \
+  --ai-timeout 60
+```
+
+## Primeiro login no WhatsApp Web
+
+No primeiro uso, o navegador pode abrir pedindo QR code:
+
+1. Escaneie o QR code no celular
+2. Aguarde carregar a lista de conversas
+3. Nas proximas execucoes, a sessao sera reutilizada via `--user-data-dir`
+
 ## Observacoes
 
-- O WhatsApp Web pode alterar seletores ao longo do tempo; o script usa estrategia com fallback para melhorar resiliencia.
-- Se nao encontrar novos dados dentro do timeout, o script encerra com erro de timeout.
+- O script cria automaticamente a planilha/abas se nao existirem.
+- O WhatsApp Web pode alterar seletores ao longo do tempo; ha fallback de leitura de texto para aumentar resiliencia.
+- Cada contato e processado individualmente; se um falhar, os demais continuam.
